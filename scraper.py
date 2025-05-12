@@ -1,89 +1,84 @@
-import time
-import pandas as pd
+import os
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
-
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
+from webdriver_manager.chrome import ChromeDriverManager
+from bs4 import BeautifulSoup, Comment
+import pandas as pd
+
+
+LEAGUES = {
+    "Premier League": "https://fbref.com/en/comps/9",
+    "La Liga": "https://fbref.com/en/comps/12",
+    "Bundesliga": "https://fbref.com/en/comps/20",
+    "Serie A": "https://fbref.com/en/comps/11",
+    "Ligue 1": "https://fbref.com/en/comps/13"
+}
+
+
+STAT_TYPES = {
+    "stats_standard": "stats",
+    "stats_passing": "passing",
+    "stats_shooting": "shooting",
+    "stats_possession": "possession",
+    "stats_defense": "defense",
+    "stats_misc": "misc"
+}
+
 
 def fetch_fbref_table_selenium(url, table_id):
     options = webdriver.ChromeOptions()
-    options.add_argument("--headless")  # Run in headless mode
+    options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    driver.get(url)
 
     try:
-        driver.get(url)
-
-        # Explicitly wait for the table to be present
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, table_id)))
+        html = driver.page_source
+        soup = BeautifulSoup(html, "html.parser")
 
-        # Now, attempt to fetch the table
-        table = driver.find_element(By.ID, table_id)
+        table = soup.find("table", {"id": table_id})
         if table:
-            html = table.get_attribute('outerHTML')
-            df = pd.read_html(html)[0]
+            df = pd.read_html(str(table))[0]
+            driver.quit()
             return df
-        else:
-            print(f"❌ Table with ID '{table_id}' not found.")
-            return pd.DataFrame()
 
-    finally:
+        comments = soup.find_all(string=lambda text: isinstance(text, Comment))
+        for comment in comments:
+            if table_id in comment:
+                comment_soup = BeautifulSoup(comment, "html.parser")
+                table = comment_soup.find("table", {"id": table_id})
+                if table:
+                    df = pd.read_html(str(table))[0]
+                    driver.quit()
+                    return df
+
         driver.quit()
+        return None
+
+    except Exception as e:
+        print(f"Error with {table_id}: {e}")
+        driver.quit()
+        return None
 
 
-# URLs for top 5 European leagues and their corresponding table IDs for all stat types
-leagues = {
-    "Premier League": {
-        "url": "https://fbref.com/en/comps/9/stats/Premier-League-Stats",
-        "table_ids": [
-            "stats_standard", "stats_passing", "stats_shooting", "stats_possession", 
-            "stats_defense", "stats_disciplines", "stats_goalkeeping"
-        ]
-    },
-    "La Liga": {
-        "url": "https://fbref.com/en/comps/12/stats/La-Liga-Stats",
-        "table_ids": [
-            "stats_standard", "stats_passing", "stats_shooting", "stats_possession", 
-            "stats_defense", "stats_disciplines", "stats_goalkeeping"
-        ]
-    },
-    "Serie A": {
-        "url": "https://fbref.com/en/comps/11/stats/Serie-A-Stats",
-        "table_ids": [
-            "stats_standard", "stats_passing", "stats_shooting", "stats_possession", 
-            "stats_defense", "stats_disciplines", "stats_goalkeeping"
-        ]
-    },
-    "Bundesliga": {
-        "url": "https://fbref.com/en/comps/20/stats/Bundesliga-Stats",
-        "table_ids": [
-            "stats_standard", "stats_passing", "stats_shooting", "stats_possession", 
-            "stats_defense", "stats_disciplines", "stats_goalkeeping"
-        ]
-    },
-    "Ligue 1": {
-        "url": "https://fbref.com/en/comps/13/stats/Ligue-1-Stats",
-        "table_ids": [
-            "stats_standard", "stats_passing", "stats_shooting", "stats_possession", 
-            "stats_defense", "stats_disciplines", "stats_goalkeeping"
-        ]
-    }
-}
+for league_name, base_url in LEAGUES.items():
+    print(f"\nScraping {league_name}...")
 
-# Scrape each league and stat type, then save to CSV
-for league, data in leagues.items():
-    print(f"Scraping {league}...")
-    
-    # For each stat type in the league
-    for table_id in data['table_ids']:
-        print(f"  - Scraping {table_id}...")
-        df = fetch_fbref_table_selenium(data['url'], table_id)
+    for table_id, path in STAT_TYPES.items():
+        url = f"{base_url}/{path}/{league_name.replace(' ', '-')}-Stats"
+        print(f"  - Scraping {table_id} from {url}...")
 
-        if not df.empty:
-            df.to_csv(f"{league}_{table_id}.csv", index=False)
-            print(f"✅ Saved {league} {table_id} to CSV")
+        df = fetch_fbref_table_selenium(url, table_id)
+        if df is not None:
+            os.makedirs("data", exist_ok=True)
+            filename = f"data/{league_name.replace(' ', '_')}_{table_id}.csv"
+            df.to_csv(filename, index=False)
+            print(f"    Saved to {filename}")
         else:
-            print(f"❌ Failed to fetch {league} {table_id}")
+            print(f"    Failed to scrape {table_id}")
